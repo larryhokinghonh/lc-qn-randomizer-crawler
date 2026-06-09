@@ -1,0 +1,269 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: LeetCode Question Randomizer Crawler
+
+Parameters:
+  CrawlerFunctionName:
+    Type: String
+    Default: lc-qn-randomizer-prod-main
+  CrawlerScheduleName:
+    Type: String
+    Default: lc-qn-randomizer-prod-schedule
+  ScheduleExpression:
+    Type: String
+    Default: rate(3 days)
+  DatabaseUrl:
+    Type: String
+    NoEcho: true
+  DatabaseCaCertPath:
+    Type: String
+    Default: certs/db-cacert.pem
+  DatabasePoolMax:
+    Type: Number
+    Default: 1
+    MinValue: 1
+  TimeoutSeconds:
+    Type: Number
+    Default: 300
+    MinValue: 60
+    MaxValue: 900
+  MemorySize:
+    Type: Number
+    Default: 512
+    MinValue: 128
+    MaxValue: 10240
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1096
+      - 1827
+      - 2192
+      - 2557
+      - 2922
+      - 3288
+      - 3653
+  DurationAlarmThresholdMs:
+    Type: Number
+    Default: 270000
+  AlarmEmail:
+    Type: String
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: !Ref MemorySize
+    Timeout: !Ref TimeoutSeconds
+    Tracing: Active
+    LoggingConfig:
+      LogFormat: JSON
+      ApplicationLogLevel: INFO
+      SystemLogLevel: WARN
+
+Resources:
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref AlarmTopic
+      Endpoint: !Ref AlarmEmail
+
+  CrawlerFunctionDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      QueueName: lc-qn-randomizer-prod-function-dlq
+
+  CrawlerScheduleDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      QueueName: lc-qn-randomizer-prod-schedule-dlq
+
+  CrawlerScheduleDlqPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref CrawlerScheduleDlq
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgeSchedulerDlqSendMessage
+            Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt CrawlerScheduleDlq.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/${CrawlerScheduleName}
+
+  CrawlerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${CrawlerFunctionName}
+      RetentionInDays: !Ref LogRetentionDays
+
+  CrawlerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    DependsOn:
+      - CrawlerFunctionLogGroup
+      - CrawlerScheduleDlqPolicy
+    Properties:
+      FunctionName: !Ref CrawlerFunctionName
+      Handler: src.crawler.lambda_handler
+      CodeUri: .
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSXRayDaemonWriteAccess
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt CrawlerFunctionDlq.Arn
+      EventInvokeConfig:
+        MaximumEventAgeInSeconds: 3600
+        MaximumRetryAttempts: 1
+      Environment:
+        Variables:
+          DATABASE_URL: !Ref DatabaseUrl
+          DATABASE_CA_CERT_PATH: !Ref DatabaseCaCertPath
+          DATABASE_POOL_MAX: !Sub '${DatabasePoolMax}'
+          SSL_MODE: verify-full
+      Events:
+        CrawlerSchedule:
+          Type: ScheduleV2
+          Properties:
+            Name: !Ref CrawlerScheduleName
+            ScheduleExpression: !Ref ScheduleExpression
+            FlexibleTimeWindow:
+              Mode: 'OFF'
+            RetryPolicy:
+              MaximumRetryAttempts: 2
+              MaximumEventAgeInSeconds: 3600
+            DeadLetterConfig:
+              Arn: !GetAtt CrawlerScheduleDlq.Arn
+
+  CrawlerFunctionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Crawler Lambda reported errors.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CrawlerFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  CrawlerFunctionThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Crawler Lambda invocations are being throttled.
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CrawlerFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  CrawlerFunctionDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Crawler Lambda duration is close to the configured timeout.
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CrawlerFunction
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: !Ref DurationAlarmThresholdMs
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  CrawlerFunctionDlqMessagesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Crawler Lambda function DLQ has failed events.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt CrawlerFunctionDlq.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  CrawlerScheduleDlqMessagesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Crawler schedule DLQ has failed delivery events.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt CrawlerScheduleDlq.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+Outputs:
+  CrawlerFunctionArn:
+    Description: ARN of the crawler Lambda function.
+    Value: !GetAtt CrawlerFunction.Arn
+  CrawlerFunctionDlqUrl:
+    Description: URL of the Lambda function DLQ.
+    Value: !Ref CrawlerFunctionDlq
+  CrawlerScheduleDlqUrl:
+    Description: URL of the EventBridge Scheduler DLQ.
+    Value: !Ref CrawlerScheduleDlq
