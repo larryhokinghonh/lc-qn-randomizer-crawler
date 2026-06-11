@@ -1,0 +1,26 @@
+services:
+  postgres-staging:
+    image: postgres:16-alpine
+    container_name: lc-qn-randomizer-db-dev
+    restart: unless-stopped
+    env_file:
+      - .env.dev
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lc_qn_randomizer_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - ../scripts/build-db-dev-script.sql:/docker-entrypoint-initdb.d/001-build-db-dev-script.sql:ro
+      - ../scripts/populate-db-dev-script.sql:/docker-entrypoint-initdb.d/001-populate-db-dev-script.sql:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-lc_qn_randomizer_dev}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
