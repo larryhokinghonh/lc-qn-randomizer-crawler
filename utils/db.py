@@ -1,25 +1,45 @@
 import os
-
+import tempfile
+import boto3
+import json
+from pathlib import Path
 from psycopg_pool import ConnectionPool
-
-from utils import load_env
-
+from utils import constants, load_env
 
 _database_pool = None
 
+def get_database_ca_cert_from_secrets_manager(secret_id):
+    response = boto3.client("secretsmanager").get_secret_value(SecretId=secret_id)
+    if "SecretString" in response:
+        return json.loads(response["SecretString"])
+    return response["SecretBinary"].decode("utf-8")
+
+def write_database_ca_cert(certificate):
+    ca_cert_path = Path(tempfile.gettempdir()) / constants.DATABASE_CA_CERT_FILENAME
+    ca_cert_path.write_text(certificate, encoding="utf-8")
+    return str(ca_cert_path)
+
+def get_database_ca_cert_path():
+    secret_id = load_env.get_database_ca_cert_secret_id()
+    if not secret_id:
+        return None
+    certificate = get_database_ca_cert_from_secrets_manager("lc-qn-randomizer-prod-main/db-ca-cert")
+    return write_database_ca_cert(certificate["DATABASE_CA_CERT_SECRET_ID"])
+
+def build_connection_kwargs():
+    ssl_mode = load_env.get_ssl_mode()
+    connection_kwargs = {"sslmode": ssl_mode}
+    ca_cert_path = get_database_ca_cert_path()
+    if ca_cert_path:
+        connection_kwargs["sslrootcert"] = ca_cert_path
+    return connection_kwargs
 
 def get_database_pool():
     global _database_pool
     if _database_pool is None:
-        ssl_mode = load_env.get_ssl_mode()
-        connection_kwargs = {"sslmode": ssl_mode}
-        ca_cert_path = load_env.get_database_ca_cert_path()
-        if ca_cert_path:
-            connection_kwargs["sslrootcert"] = ca_cert_path
-
         _database_pool = ConnectionPool(
             conninfo=os.getenv("DATABASE_URL"),
-            kwargs=connection_kwargs,
+            kwargs=build_connection_kwargs(),
             min_size=0,
             max_size=load_env.get_database_pool_max(),
             open=False,
@@ -28,20 +48,16 @@ def get_database_pool():
 
     return _database_pool
 
-
 def connect_to_database():
     return get_database_pool().connection()
-
 
 def get_latest_question_number(connection):
     with connection.cursor() as cursor:
         cursor.execute("SELECT COALESCE(MAX(question_number), 0) FROM leetcode_questions")
         return cursor.fetchone()[0]
 
-
 def extract_title(url):
     return url.rstrip("/").split("/")[-1]
-
 
 def get_questions_without_topics(connection):
     with connection.cursor() as cursor:
@@ -65,7 +81,6 @@ def get_questions_without_topics(connection):
             }
             for row in cursor.fetchall()
         ]
-
 
 def add_topics_to_questions(cursor, topics_by_question_id):
     topic_names = sorted(
@@ -113,7 +128,6 @@ def add_topics_to_questions(cursor, topics_by_question_id):
             [topic_id for _, topic_id in relationships],
         ),
     )
-
 
 def insert_questions(connection, questions):
     if not questions:

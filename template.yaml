@@ -15,9 +15,9 @@ Parameters:
   DatabaseUrl:
     Type: String
     NoEcho: true
-  DatabaseCaCertPath:
+  DatabaseCaCertSecretArn:
     Type: String
-    Default: certs/db-cacert.pem
+    NoEcho: true
   DatabasePoolMax:
     Type: Number
     Default: 1
@@ -136,6 +136,12 @@ Resources:
       Policies:
         - AWSLambdaBasicExecutionRole
         - AWSXRayDaemonWriteAccess
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DatabaseCaCertSecretArn
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt CrawlerFunctionDlq.Arn
@@ -145,7 +151,7 @@ Resources:
       Environment:
         Variables:
           DATABASE_URL: !Ref DatabaseUrl
-          DATABASE_CA_CERT_PATH: !Ref DatabaseCaCertPath
+          DATABASE_CA_CERT_SECRET_ID: !Ref DatabaseCaCertSecretArn
           DATABASE_POOL_MAX: !Sub '${DatabasePoolMax}'
           SSL_MODE: verify-full
       Events:

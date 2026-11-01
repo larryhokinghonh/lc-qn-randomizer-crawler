@@ -1,8 +1,6 @@
 import os
-from pathlib import Path
 
 from dotenv import load_dotenv
-
 from utils import constants
 
 def get_environment_path():
@@ -14,7 +12,7 @@ load_dotenv(get_environment_path())
 def load_config():
     required_keys = ["DATABASE_URL", "DATABASE_POOL_MAX"]
     if get_ssl_mode() in constants.CERTIFICATE_SSL_MODES:
-        required_keys.append("DATABASE_CA_CERT_PATH")
+        required_keys.append("DATABASE_CA_CERT_SECRET_ID")
 
     missing_keys = [key for key in required_keys if not os.getenv(key)]
     if missing_keys:
@@ -23,11 +21,8 @@ def load_config():
         )
     get_database_pool_max()
 
-def get_database_ca_cert_path():
-    ca_cert_path = os.getenv("DATABASE_CA_CERT_PATH")
-    if ca_cert_path and not Path(ca_cert_path).is_absolute():
-        return str(constants.BASE_DIR / ca_cert_path)
-    return ca_cert_path
+def get_database_ca_cert_secret_id():
+    return os.getenv("DATABASE_CA_CERT_SECRET_ID")
 
 def get_ssl_mode():
     ssl_mode = os.getenv("SSL_MODE", constants.DEFAULT_SSL_MODE).lower()

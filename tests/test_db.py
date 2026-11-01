@@ -1,5 +1,7 @@
+import json
+
 from tests.helpers import FakeConnection
-from utils import constants, db
+from utils import db
 
 
 def test_get_latest_question_number_reads_database_before_fetching():
@@ -64,7 +66,10 @@ def test_get_questions_without_topics_returns_titles_from_urls():
     ]
 
 
-def test_get_database_pool_uses_database_url_ca_cert_and_pool_max(monkeypatch):
+def test_get_database_pool_uses_database_url_ca_cert_secret_and_pool_max(
+    monkeypatch,
+    tmp_path,
+):
     created_pools = []
 
     class FakePool:
@@ -76,29 +81,41 @@ def test_get_database_pool_uses_database_url_ca_cert_and_pool_max(monkeypatch):
         def open(self):
             self.opened = True
 
+    def fake_get_database_ca_cert_from_secrets_manager(secret_id):
+        assert secret_id == "lc-qn-randomizer-prod-main/db-ca-cert"
+        return {"DATABASE_CA_CERT_SECRET_ID": "CERTIFICATE"}
+
     monkeypatch.setattr(db, "_database_pool", None)
     monkeypatch.setattr(db, "ConnectionPool", FakePool)
+    monkeypatch.setattr(db.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        db,
+        "get_database_ca_cert_from_secrets_manager",
+        fake_get_database_ca_cert_from_secrets_manager,
+    )
     monkeypatch.setenv(
         "DATABASE_URL",
         "postgresql://user:password@example.com:5432/database",
     )
-    monkeypatch.setenv("DATABASE_CA_CERT_PATH", "certs/root.pem")
+    monkeypatch.setenv("DATABASE_CA_CERT_SECRET_ID", "secret-arn")
     monkeypatch.setenv("DATABASE_POOL_MAX", "3")
     monkeypatch.setenv("SSL_MODE", "verify-full")
 
     pool = db.get_database_pool()
+    ca_cert_path = tmp_path / db.constants.DATABASE_CA_CERT_FILENAME
 
     assert pool.opened is True
     assert created_pools[0].kwargs == {
         "conninfo": "postgresql://user:password@example.com:5432/database",
         "kwargs": {
             "sslmode": "verify-full",
-            "sslrootcert": str(constants.BASE_DIR / "certs/root.pem"),
+            "sslrootcert": str(ca_cert_path),
         },
         "min_size": 0,
         "max_size": 3,
         "open": False,
     }
+    assert ca_cert_path.read_text(encoding="utf-8") == "CERTIFICATE"
 
 
 def test_get_database_pool_disables_ssl_without_ca_certificate(monkeypatch):
@@ -118,7 +135,7 @@ def test_get_database_pool_disables_ssl_without_ca_certificate(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://localhost:5432/database")
     monkeypatch.setenv("DATABASE_POOL_MAX", "1")
     monkeypatch.setenv("SSL_MODE", "disable")
-    monkeypatch.delenv("DATABASE_CA_CERT_PATH", raising=False)
+    monkeypatch.delenv("DATABASE_CA_CERT_SECRET_ID", raising=False)
 
     pool = db.get_database_pool()
 
@@ -130,3 +147,22 @@ def test_get_database_pool_disables_ssl_without_ca_certificate(monkeypatch):
         "max_size": 1,
         "open": False,
     }
+
+
+def test_get_database_ca_cert_from_secrets_manager_reads_secret_string(monkeypatch):
+    certificate = {"DATABASE_CA_CERT_SECRET_ID": "CERTIFICATE"}
+
+    class FakeSecretsManagerClient:
+        def get_secret_value(self, SecretId):
+            assert SecretId == "secret-arn"
+            return {"SecretString": json.dumps(certificate)}
+
+    class FakeBoto3:
+        @staticmethod
+        def client(service_name):
+            assert service_name == "secretsmanager"
+            return FakeSecretsManagerClient()
+
+    monkeypatch.setattr(db, "boto3", FakeBoto3)
+
+    assert db.get_database_ca_cert_from_secrets_manager("secret-arn") == certificate
