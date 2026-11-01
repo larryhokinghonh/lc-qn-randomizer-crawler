@@ -15,12 +15,10 @@ def test_get_environment_path_uses_development_env(monkeypatch):
     assert load_env.get_environment_path() == constants.BASE_DIR / ".env.dev"
 
 
-def test_get_database_ca_cert_path_resolves_relative_path(monkeypatch):
-    monkeypatch.setenv("DATABASE_CA_CERT_PATH", "certs/root.pem")
+def test_get_database_ca_cert_secret_id_reads_environment(monkeypatch):
+    monkeypatch.setenv("DATABASE_CA_CERT_SECRET_ID", "secret-arn")
 
-    assert load_env.get_database_ca_cert_path() == str(
-        constants.BASE_DIR / "certs/root.pem"
-    )
+    assert load_env.get_database_ca_cert_secret_id() == "secret-arn"
 
 
 def test_get_database_pool_max_requires_positive_integer(monkeypatch):
@@ -44,7 +42,7 @@ def test_get_ssl_mode_rejects_unsupported_mode(monkeypatch):
 
 
 def test_load_config_requires_database_credentials(monkeypatch):
-    for key in ["DATABASE_URL", "DATABASE_CA_CERT_PATH", "DATABASE_POOL_MAX"]:
+    for key in ["DATABASE_URL", "DATABASE_CA_CERT_SECRET_ID", "DATABASE_POOL_MAX"]:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("SSL_MODE", "verify-full")
 
@@ -56,16 +54,16 @@ def test_load_config_allows_disabled_ssl_without_ca_certificate(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/database")
     monkeypatch.setenv("DATABASE_POOL_MAX", "1")
     monkeypatch.setenv("SSL_MODE", "disable")
-    monkeypatch.delenv("DATABASE_CA_CERT_PATH", raising=False)
+    monkeypatch.delenv("DATABASE_CA_CERT_SECRET_ID", raising=False)
 
     load_env.load_config()
 
 
-def test_load_config_requires_ca_certificate_for_verify_full(monkeypatch):
+def test_load_config_requires_ca_certificate_secret_for_verify_full(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://example.com/database")
     monkeypatch.setenv("DATABASE_POOL_MAX", "1")
     monkeypatch.setenv("SSL_MODE", "verify-full")
-    monkeypatch.delenv("DATABASE_CA_CERT_PATH", raising=False)
+    monkeypatch.delenv("DATABASE_CA_CERT_SECRET_ID", raising=False)
 
-    with pytest.raises(RuntimeError, match="DATABASE_CA_CERT_PATH"):
+    with pytest.raises(RuntimeError, match="DATABASE_CA_CERT_SECRET_ID"):
         load_env.load_config()

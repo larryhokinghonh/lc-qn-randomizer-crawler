@@ -20,7 +20,7 @@ python -m venv venv
 .\venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-- Configure `.env` and place the database CA certificate at the configured path.
+- Configure `.env` with the database URL and the Secrets Manager secret ID for the database CA certificate.
 
 Run the crawler against the SSL-secured database:
 
@@ -32,12 +32,12 @@ To use a local development database, copy `.env.dev.template` to `.env.dev`,
 provide the local database URL, and run:
 
 ```cmd
-$env:APP_ENV="dev"
+set APP_ENV=dev
 .\venv\Scripts\python.exe -m src.crawler
 ```
 
 The development file uses `SSL_MODE=disable` and does not require
-`DATABASE_CA_CERT_PATH`. Clear `APP_ENV` before returning to `.env`:
+`DATABASE_CA_CERT_SECRET_ID`. Clear `APP_ENV` before returning to `.env`:
 
 ```cmd
 set APP_ENV=
@@ -57,7 +57,7 @@ Build inside the Lambda-compatible Linux container:
 sam build --use-container
 ```
 
-The Makefile packages runtime dependencies, `src/crawler.py`, `utils/`, and the CA certificate into `.aws-sam/build/`.
+The Makefile packages runtime dependencies, `src/crawler.py`, and `utils/` into `.aws-sam/build/`.
 
 To deploy, use:
 
@@ -72,7 +72,7 @@ To deploy interactively:
 sam deploy --guided
 ```
 
-Provide values for `DatabaseUrl` and `AlarmEmail`. Review other parameters such as `ScheduleExpression`, `TimeoutSeconds`, `MemorySize`, `DatabasePoolMax`, and `LogRetentionDays`. After deployment, confirm the SNS email subscription.
+Provide values for `DatabaseUrl`, `DatabaseCaCertSecretArn`, and `AlarmEmail`. Store the raw PEM CA certificate as the Secrets Manager secret value. Review other parameters such as `ScheduleExpression`, `TimeoutSeconds`, `MemorySize`, `DatabasePoolMax`, and `LogRetentionDays`. After deployment, confirm the SNS email subscription.
 
 ## Testing
 
